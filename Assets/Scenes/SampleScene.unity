@@ -487,8 +487,16 @@ PrefabInstance:
       value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 8988721516164138185, guid: 66e556ddc7e9bba4e8979f49abe55ab1, type: 3}
+      propertyPath: usePDB
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 8988721516164138185, guid: 66e556ddc7e9bba4e8979f49abe55ab1, type: 3}
       propertyPath: numTrials
       value: 10000
+      objectReference: {fileID: 0}
+    - target: {fileID: 8988721516164138185, guid: 66e556ddc7e9bba4e8979f49abe55ab1, type: 3}
+      propertyPath: isBatchTestMode
+      value: 1
       objectReference: {fileID: 0}
     m_RemovedComponents: []
   m_SourcePrefab: {fileID: 100100000, guid: 66e556ddc7e9bba4e8979f49abe55ab1, type: 3}
