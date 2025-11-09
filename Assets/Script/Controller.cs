@@ -442,7 +442,7 @@ public class Controller : MonoBehaviour
 
         }
     }
-    public void stateTileIDA(Vector2Int[] nextPos)
+    public void stateTileIDA(Vector2Int[] nextPos,int k)
     {
         
         int count = 0;
@@ -468,6 +468,6 @@ public class Controller : MonoBehaviour
             }
 
         }
-        clickCount++;
+        if(k!=0)clickCount++;
     }
 }

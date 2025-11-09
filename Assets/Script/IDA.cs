@@ -100,6 +100,8 @@ public class IDA : MonoBehaviour
     // --- 「自動試行（1万回）」の親コルーチン ---
     IEnumerator RunBatchTest(int totalTrials, bool isPushRule)
     {
+        patternDB1 = null; // ★ PDBの“記憶”をリセット！
+        Ctr.isStop = false;
         // --- 1. テスト前の準備 ---
         string ruleName = isPushRule ? "Push" : "Standard";
         Debug.Log($"★★★ 自動テスト開始 (ルール: {ruleName}, 回数: {totalTrials}回) ★★★");
@@ -145,6 +147,8 @@ public class IDA : MonoBehaviour
     // 「手動試行（1回だけ）」の親コルーチン
     IEnumerator RunSingleTest(bool isPushRule)
     {
+        patternDB1 = null; // ★ PDBの“記憶”をリセット！
+        Ctr.isStop = false;
         // --- 1. 準備 ---
         string ruleName = isPushRule ? "Push" : "Standard";
         Debug.Log($"★★★ 手動テスト開始 (ルール: {ruleName}) ★★★");
@@ -975,7 +979,7 @@ public class IDA : MonoBehaviour
         for (int i = 0; i < solutionPath.Count; i++)
         {
             if (Ctr.isStop) break;
-            Ctr.stateTileIDA(solutionPath[i]);
+            Ctr.stateTileIDA(solutionPath[i],i);
             if (i < solutionPath.Count - 1)
                 yield return new WaitForSeconds(0.5f);
         }
@@ -987,14 +991,17 @@ public class IDA : MonoBehaviour
     {
         Ctr.isStart = true; Ctr.isfinish = false; isReplaying = true;
         Debug.Log($"リプレイを開始します... 総手数: {solutionPath.Count - 1}");
+        Ctr.clickCount = 0;
         for (int i = 0; i < solutionPath.Count; i++)
         {
             if (Ctr.isStop) { Debug.Log("リプレイが中断されました"); break; }
-            Ctr.stateTileIDA(solutionPath[i]);
+            Ctr.stateTileIDA(solutionPath[i],i);
             if (i < solutionPath.Count - 1)
                 yield return new WaitForSeconds(0.5f);
+            
         }
         if (!Ctr.isStop) { Debug.Log("リプレイ完了！"); }
         Ctr.isfinish = true; isReplaying = false;
     }
+
 }
