@@ -261,7 +261,7 @@ MonoBehaviour:
   numberTransform: []
   shuffle: {fileID: 7323521432272678516}
   retry: {fileID: 5987025845109196338}
-  push: {fileID: 0}
+  push: {fileID: 9039927301301204865}
   numberArray:
   - {fileID: 4833991005800476695}
   - {fileID: 4695260043526823965}
@@ -312,7 +312,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   idaButton: {fileID: 3369313950424071404}
   replayButton: {fileID: 5628175414705387559}
+  isBatchTestMode: 1
   numTrials: 10000
+  usePDB: 1
 --- !u!1 &590871474887327265
 GameObject:
   m_ObjectHideFlags: 0
@@ -2287,7 +2289,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &174831069954603914
 RectTransform:
   m_ObjectHideFlags: 0
@@ -5823,7 +5825,7 @@ GameObject:
   - component: {fileID: 5058532269776771842}
   - component: {fileID: 9039927301301204865}
   m_Layer: 5
-  m_Name: replayButton (1)
+  m_Name: pushButton (1)
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0

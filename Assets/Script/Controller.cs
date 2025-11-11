@@ -21,7 +21,7 @@ public class Controller : MonoBehaviour
     public float finishTime = 0.0f; //完成した時間
     public IDA ida = null;
     [HideInInspector] public bool isStart = false; //スタートしているか
-    [HideInInspector] public bool isfinish = false; //フィニッシュしているか(なんでstaticしてたんだろ...)
+    [HideInInspector] public bool isfinish = false; //フィニッシュしているか
     [HideInInspector] public bool isStop = false; //スタートしているか
     [HideInInspector] public List<Vector3> numberTransform = new List<Vector3>(); //左上から123...としたときのそれぞれの座標（不変　右下0）
     public Button shuffle; 

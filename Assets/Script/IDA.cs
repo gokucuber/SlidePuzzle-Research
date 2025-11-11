@@ -1,4 +1,5 @@
-﻿using System.Collections;
+﻿
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System;
@@ -8,7 +9,9 @@ using System.IO;
 using System.Text;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Runtime.Serialization;
-// 8パズル専用IDA*探索スクリプト（★★ 最終・万能型 ★★）
+
+// 8パズル ＆ 15パズル「挑戦（ちょうせん）」版 IDA*探索スクリプト
+// （★★ OutOfMemoryException 修正版 ★★）
 public class IDA : MonoBehaviour
 {
     // ========== 1. Unity / Controller 関連 ==========
@@ -16,20 +19,19 @@ public class IDA : MonoBehaviour
     public Button replayButton;
     private Controller Ctr;
 
-    // --- ★★★ 3つの「切り替えスイッチ」 ★★★ ---
     [Header("【1. 自動テストの設定】")]
-    public bool isBatchTestMode = true; // true = 1万回テスト / false = 1回だけ解いて再生
-    public int numTrials = 10000; // 試行回数 (isBatchTestMode が true の時だけ使われる)
+    public bool isBatchTestMode = true;
+    public int numTrials = 10000;
 
     [Header("【2. ヒューリスティクスの設定】")]
-    public bool usePDB = true; // true = PDB(攻略本)を使う / false = h/k (ヘボいコンパス) を使う
-                               // --- ★★★★★★★★★★★★★★★★★ ---
+    public bool usePDB = true;
 
-    // (PDB本体)
     private Dictionary<ulong, byte> patternDB1 = null;
+    private Dictionary<ulong, byte> patternDB2 = null;
 
     // (内部で使うパズルの状態)
     private int rowNum;
+    private int tileNum;
     private Vector2Int[] nowPos;
     private Vector2Int[] finPos;
     private Vector2Int[] staPos;
@@ -49,7 +51,6 @@ public class IDA : MonoBehaviour
 
     // ========== 2. IDA*アルゴリズムの本体 ==========
 
-    // IDA*の探索で使う「ノード（状態）」をスタックに積むためのクラス
     private class SearchNode
     {
         public Vector2Int[] state; public int g; public int pathIndex;
@@ -57,13 +58,10 @@ public class IDA : MonoBehaviour
         public bool isReturning; public int lastDir;
     }
 
-    // --- Unityの起動時に1回だけ呼ばれる ---
     void Start()
     {
         Ctr = GetComponent<Controller>();
-        // ボタンが押されたら、モード（自動/手動）を切り替える親関数を呼ぶ
         if (idaButton != null) idaButton.onClick.AddListener(OnButtonClick_Start);
-
         if (replayButton != null)
         {
             replayButton.onClick.AddListener(OnButtonClickReplay);
@@ -71,42 +69,42 @@ public class IDA : MonoBehaviour
         }
     }
 
-    // --- 「探索開始」ボタンが押されたときの処理 ---
-    // (★★ 改造 ★★ 自動か手動かを、フラグで切り替える)
     public void OnButtonClick_Start()
     {
-        if (isReplaying) return; // リプレイ中は実行しない
+        if (isReplaying) return;
         if (Ctr == null) Ctr = GetComponent<Controller>();
         if (Ctr == null) { Debug.LogError("Controller が見つかりません。"); return; }
 
-        StopAllCoroutines(); // 実行中のテストを停止
+        StopAllCoroutines();
 
-        // ★ Inspectorの「isBatchTestMode」フラグを見て、どっちを起動するか決める
         if (isBatchTestMode)
         {
-            // --- 1. 自動テスト（1万回）モード ---
-            // Ctr.isCountInterpretation (押し出し/標準) の状態を見て、テストを開始
             StartCoroutine(RunBatchTest(numTrials, Ctr.isCountInterpretation));
         }
         else
         {
-            // --- 2. 手動テスト（1回だけ解いて再生）モード ---
-            // Ctr.isCountInterpretation (押し出し/標準) の状態を見て、テストを開始
             StartCoroutine(RunSingleTest(Ctr.isCountInterpretation));
         }
     }
 
 
-    // --- 「自動試行（1万回）」の親コルーチン ---
+    // --- 「自動試行（N回）」の親コルーチン ---
     IEnumerator RunBatchTest(int totalTrials, bool isPushRule)
     {
-        patternDB1 = null; // ★ PDBの“記憶”をリセット！
+        patternDB1 = null;
+        patternDB2 = null;
         Ctr.isStop = false;
+
         // --- 1. テスト前の準備 ---
         string ruleName = isPushRule ? "Push" : "Standard";
         Debug.Log($"★★★ 自動テスト開始 (ルール: {ruleName}, 回数: {totalTrials}回) ★★★");
         Ctr.isCountInterpretation = isPushRule;
+
+        // ★ Ctrから N と tileNum を“正しく”受け取る
         rowNum = Ctr.rowNum;
+        tileNum = Ctr.tileNum;
+        Debug.Log($"★ 取得（しゅとく）した設定（せってい）: N={rowNum}, tileNum={tileNum}");
+
         nowPos = new Vector2Int[Ctr.tileNum + 1];
         finPos = new Vector2Int[Ctr.tileNum + 1];
         staPos = new Vector2Int[Ctr.tileNum + 1];
@@ -114,27 +112,30 @@ public class IDA : MonoBehaviour
         BuildManhattanTable();
 
         // --- 2. ★ PDB（攻略本）を準備する ★ ---
-        // (「usePDB」フラグが true の時だけ、PDBをロード/構築する)
         if (usePDB)
         {
-            yield return StartCoroutine(PreparePDB(isPushRule)); // ★ PDB準備関数を呼ぶ
-            if (patternDB1 == null) { Debug.LogError("PDBの準備に失敗。中止します。"); yield break; }
+            yield return StartCoroutine(PreparePDB(isPushRule));
+            if (rowNum == 4 && (patternDB1 == null || patternDB2 == null))
+            { Debug.LogError("15パズルのPDB準備に失敗。中止します。"); yield break; }
+            if (rowNum == 3 && patternDB1 == null)
+            { Debug.LogError("8パズルのPDB準備に失敗。中止します。"); yield break; }
             Debug.Log("PDB準備が完了しました。");
         }
         else
         {
             Debug.LogWarning("PDB（攻略本）を使用しないでテストを実行します（h/k を使用）");
-            patternDB1 = null; // PDBを「使わない」ことを明示
+            patternDB1 = null;
+            patternDB2 = null;
         }
 
-        // --- 3. 1万回ループ ---
+        // --- 3. N回ループ ---
         Debug.Log("探索ループを開始します...");
         for (int i = 1; i <= totalTrials; i++)
         {
             if (Ctr.isStop) { Debug.Log("自動テストが手動で中断されました。"); yield break; }
             Ctr.Shuffle();
             ConvertFromController();
-            yield return StartCoroutine(IDAStarCoroutine((Vector2Int[])staPos.Clone(), true)); // ★ true = 自動モード
+            yield return StartCoroutine(IDAStarCoroutine((Vector2Int[])staPos.Clone(), true));
             if (i % 1000 == 0) { Debug.Log($"--- 自動テスト進捗: {i} / {totalTrials} 回 完了 ---"); }
         }
 
@@ -143,53 +144,54 @@ public class IDA : MonoBehaviour
         Debug.Log($"結果はPCの「ドキュメント」フォルダ内の CSV を確認してください。");
     }
 
-    // --- ★★★ 新設 ★★★ ---
-    // 「手動試行（1回だけ）」の親コルーチン
+    // --- 「手動試行（1回だけ）」の親コルーチン ---
     IEnumerator RunSingleTest(bool isPushRule)
     {
-        patternDB1 = null; // ★ PDBの“記憶”をリセット！
+        patternDB1 = null;
+        patternDB2 = null;
         Ctr.isStop = false;
+
         // --- 1. 準備 ---
         string ruleName = isPushRule ? "Push" : "Standard";
         Debug.Log($"★★★ 手動テスト開始 (ルール: {ruleName}) ★★★");
         Ctr.isCountInterpretation = isPushRule;
+
         rowNum = Ctr.rowNum;
+        tileNum = Ctr.tileNum;
+        Debug.Log($"★ 取得（しゅとく）した設定（せってい）: N={rowNum}, tileNum={tileNum}");
+
         nowPos = new Vector2Int[Ctr.tileNum + 1];
         finPos = new Vector2Int[Ctr.tileNum + 1];
         staPos = new Vector2Int[Ctr.tileNum + 1];
 
-        // ★手動の時は、「今見えてる盤面」をスタート盤面にする
-        // （シャッフル（Ctr.Shuffle()）は“しない”）
         ConvertFromController();
-
         BuildManhattanTable();
 
         // --- 2. ★ PDB（攻略本）を準備する ★ ---
-        // (「usePDB」フラグが true の時だけ、PDBをロード/構築する)
         if (usePDB)
         {
             yield return StartCoroutine(PreparePDB(isPushRule));
-            if (patternDB1 == null) { Debug.LogError("PDBの準備に失敗。中止します。"); yield break; }
+            if (rowNum == 4 && (patternDB1 == null || patternDB2 == null))
+            { Debug.LogError("15パズルのPDB準備に失敗。中止します。"); yield break; }
+            if (rowNum == 3 && patternDB1 == null)
+            { Debug.LogError("8パズルのPDB準備に失敗。中止します。"); yield break; }
             Debug.Log("PDB準備が完了しました。");
         }
         else
         {
             Debug.LogWarning("PDB（攻略本）を使用しないで探索します（h/k を使用）");
-            patternDB1 = null; // PDBを「使わない」ことを明示
+            patternDB1 = null;
+            patternDB2 = null;
         }
 
         // --- 3. 1回だけ探索 ---
         Debug.Log("探索を開始します...");
 
-        // ★ false = 手動モード（＝解を再生する）
         yield return StartCoroutine(IDAStarCoroutine((Vector2Int[])staPos.Clone(), false));
-
-        // --- 4. 完了（結果はIDAStarCoroutineの中で再生される） ---
     }
 
 
     // --- IDA*探索の「親」となるコルーチン ---
-    // (★★ 改造 ★★ isBatch（自動モードか？）フラグを受け取る)
     IEnumerator IDAStarCoroutine(Vector2Int[] startState, bool isBatch)
     {
         solutionPath = null;
@@ -203,45 +205,54 @@ public class IDA : MonoBehaviour
             iteration++;
             nodesSearched = 0;
             int temp = INF;
-            yield return StartCoroutine(SearchIterative(startState, threshold, -1, result => temp = result));
+
+            yield return StartCoroutine(SearchRecursive(startState, threshold, -1, result => temp = result));
+
             if (Ctr.isStop) yield break;
 
-            // 5. ★ 解が見つかった場合
-            if (solutionPath != null)
+            if (temp == threshold)
             {
-                float elapsed = Time.realtimeSinceStartup - startSearch;
-                int moves = solutionPath.Count - 1;
-                string rule = Ctr.isCountInterpretation ? "Push" : "Standard";
-                int pushCount = AnalyzeSolutionPath(solutionPath, Ctr.isCountInterpretation);
-
-                // ★「自動テスト」の時だけ、CSVに記録
-                if (isBatch)
+                if (usePDB && (patternDB1 != null || patternDB2 != null))
                 {
-                    RecordResult(rule, moves, elapsed, nodesSearched, pushCount);
+                    yield return StartCoroutine(ReconstructPathWithPDB(startState));
                 }
-                else // ★「手動テスト」の時は、ログに出して、解を再生する
+
+                if (solutionPath != null && solutionPath.Count > 0)
                 {
+                    float elapsed = Time.realtimeSinceStartup - startSearch;
+                    int moves = solutionPath.Count - 1;
+                    string rule = Ctr.isCountInterpretation ? "Push" : "Standard";
+                    int pushCount = AnalyzeSolutionPath(solutionPath, Ctr.isCountInterpretation);
 
-                    string ruleName = Ctr.isCountInterpretation ? "Push" : "Standard";
-
-                    Debug.Log($"★★★ 解発見! ★★★");
-                    Debug.Log($"ルール: {ruleName}, 手数: {moves}手");
-                    Debug.Log($"探索時間: {elapsed:F4}秒, 探索ノード数: {nodesSearched}");
-                    Debug.Log($"押し出し回数: {pushCount}回");
-
-                    if (replayButton != null) replayButton.interactable = true;
-                    yield return StartCoroutine(PlaySolution()); // ★解を再生
+                    if (isBatch)
+                    {
+                        RecordResult(rule, moves, elapsed, nodesSearched, pushCount);
+                    }
+                    else
+                    {
+                        string ruleName = Ctr.isCountInterpretation ? "Push" : "Standard";
+                        Debug.Log($"★★★ 解発見! ★★★");
+                        Debug.Log($"ルール: {ruleName}, 手数: {moves}手");
+                        Debug.Log($"探索時間: {elapsed:F4}秒, 探索ノード数: {nodesSearched}");
+                        Debug.Log($"押し出し回数: {pushCount}回");
+                        if (replayButton != null) replayButton.interactable = true;
+                        yield return StartCoroutine(PlaySolution());
+                    }
+                }
+                else
+                {
+                    if (!isBatch) Debug.LogError("解は見つかりましたが、経路の構築に失敗しました。");
                 }
 
                 yield break;
             }
+
             if (temp == INF)
             {
                 if (!isBatch) Debug.LogError("解が見つかりませんでした。");
                 yield break;
             }
 
-            // 閾値更新ログ（手動モードの時だけ出す）
             if (!isBatch)
             {
                 Debug.Log($"反復{iteration}: 閾値={temp}, ノード数={nodesSearched}, 経過時間={(Time.realtimeSinceStartup - startSearch):F2}秒");
@@ -250,103 +261,73 @@ public class IDA : MonoBehaviour
         }
     }
 
-    // --- IDA*の「本体」 (SearchIterative) --- (変更なし)
-    IEnumerator SearchIterative(Vector2Int[] startState, int threshold, int prevDir, System.Action<int> callback)
+    // --- IDA*の「本体」（「再帰（さいき）」バージョン） ---
+    // ★★★ OutOfMemoryException 修正版 ★★★
+    IEnumerator SearchRecursive(Vector2Int[] startState, int threshold, int prevDir, System.Action<int> callback)
     {
-        var stack = new Stack<SearchNode>();
-        var visited = new HashSet<ulong>();
+        var path = new List<Vector2Int[]>();
+        path.Add((Vector2Int[])startState.Clone());
+
+        // ★★★ 修正点（ここから） ★★★
+        // var visited = new Dictionary<ulong, int>(); // ← メモリ爆発の原因！ 削除！
+        // ★★★ 修正点（ここまで） ★★★
+
         int minNextThreshold = INF;
-        var nodePaths = new Dictionary<int, List<Vector2Int[]>>();
-        int nodeIdCounter = 0;
-        var initialPath = new List<Vector2Int[]> { (Vector2Int[])startState.Clone() };
-        nodePaths[nodeIdCounter] = initialPath;
+        bool goalFound = false;
 
-        stack.Push(new SearchNode
+        System.Action<Vector2Int[], int, int> searchRecursive = null;
+        searchRecursive = (currentState, g, lastDir) =>
         {
-            state = (Vector2Int[])startState.Clone(),
-            g = 0,
-            pathIndex = nodeIdCounter,
-            neighborIndex = 0,
-            neighbors = null,
-            isReturning = false,
-            lastDir = prevDir
-        });
-        nodeIdCounter++;
+            if (goalFound || Ctr.isStop) return;
+            nodesSearched++;
+            int h = Heuristic(currentState, lastDir);
+            int f = g + h;
 
-        int operationCount = 0;
-
-        while (stack.Count > 0)
-        {
-            if (Ctr.isStop) { callback(INF); yield break; }
-
-            operationCount++;
-            if (operationCount % 50000 == 0) { yield return null; }
-
-            var node = stack.Pop();
-
-            if (node.isReturning)
+            if (f > threshold)
             {
-                if (nodePaths.ContainsKey(node.pathIndex)) nodePaths.Remove(node.pathIndex);
-                visited.Remove(StateToUlong(node.state));
-                continue;
+                if (f < minNextThreshold) minNextThreshold = f;
+                return;
             }
 
-            if (node.neighborIndex == 0)
+            // ★★★ 修正点（ここから） ★★★
+            // ulong key = StateToUlong(currentState);          // ← 削除！
+            // if (visited.ContainsKey(key) && visited[key] <= g) // ← 削除！
+            // {
+            //     return;
+            // }
+            // visited[key] = g;                                 // ← 削除！
+            // ★★★ 修正点（ここまで） ★★★
+
+            if (h == 0 && SameState(currentState, finPos))
             {
-                nodesSearched++;
-                ulong key = StateToUlong(node.state);
-                if (visited.Contains(key)) { continue; }
-                visited.Add(key);
-
-                int h = Heuristic(node.state, node.lastDir);
-                int f = node.g + h;
-
-                if (f > threshold)
+                if (!usePDB || (patternDB1 == null && patternDB2 == null))
                 {
-                    visited.Remove(key);
-                    if (f < minNextThreshold) minNextThreshold = f;
-                    continue;
+                    solutionPath = new List<Vector2Int[]>(path);
                 }
-
-                if (h == 0 && SameState(node.state, finPos))
-                {
-                    solutionPath = new List<Vector2Int[]>();
-                    var currentPath = nodePaths[node.pathIndex];
-                    foreach (var p in currentPath) solutionPath.Add((Vector2Int[])p.Clone());
-                    callback(node.g);
-                    yield break;
-                }
-
-                if (Ctr.isCountInterpretation)
-                {
-                    node.neighbors = GetNeighborsMultiSlide(node.state, node.g, node.lastDir);
-                }
-                else
-                {
-                    node.neighbors = GetNeighbors1WithPruning(node.state, node.lastDir);
-                }
+                goalFound = true;
+                return;
             }
 
-            if (node.neighborIndex < node.neighbors.Count)
+            var neighbors = Ctr.isCountInterpretation ?
+                                GetNeighborsMultiSlide(currentState, g, lastDir) :
+                                GetNeighbors1WithPruning(currentState, lastDir);
+
+            foreach (var neighbor in neighbors)
             {
-                var nextState = node.neighbors[node.neighborIndex]; node.neighborIndex++;
-                int moveDir = GetMoveDirection(node.state, nextState);
-                var currentPath = nodePaths[node.pathIndex];
-                var newPath = new List<Vector2Int[]>(currentPath);
-                newPath.Add((Vector2Int[])nextState.Clone());
-                int newNodeId = nodeIdCounter++;
-                nodePaths[newNodeId] = newPath;
-                stack.Push(node);
-                stack.Push(new SearchNode { state = nextState, g = node.g + 1, pathIndex = newNodeId, neighborIndex = 0, neighbors = null, isReturning = true, lastDir = moveDir });
-                stack.Push(new SearchNode { state = nextState, g = node.g + 1, pathIndex = newNodeId, neighborIndex = 0, neighbors = null, isReturning = false, lastDir = moveDir });
+                if (goalFound || Ctr.isStop) return;
+                path.Add((Vector2Int[])neighbor.Clone());
+                searchRecursive(neighbor, g + 1, GetMoveDirection(currentState, neighbor));
+                if (goalFound || Ctr.isStop) return;
+                path.RemoveAt(path.Count - 1);
             }
-            else
-            {
-                if (nodePaths.ContainsKey(node.pathIndex)) nodePaths.Remove(node.pathIndex);
-                visited.Remove(StateToUlong(node.state));
-            }
-        }
-        callback(minNextThreshold);
+        };
+
+        searchRecursive(startState, 0, prevDir);
+
+        if (goalFound) { callback(threshold); }
+        else if (Ctr.isStop) { callback(INF); }
+        else { callback(minNextThreshold); }
+        yield break;
     }
 
 
@@ -388,31 +369,30 @@ public class IDA : MonoBehaviour
         catch (Exception e) { Debug.LogError($"PDBの読み込みに失敗: {e.Message}"); return null; }
     }
 
-    // --- ★★★ 新設 ★★★ ---
-    // PDB準備の「親」関数（「押し出し」か「標準」かを振り分ける）
+    // --- PDB準備の「親」関数（「押し出し」か「標準」かを振り分ける） ---
     IEnumerator PreparePDB(bool isPushRule)
     {
-        // 既にロード済みなら何もしない
-        if (patternDB1 != null) yield break;
+        if (patternDB1 != null || patternDB2 != null) yield break;
 
-        if (isPushRule)
+        if (rowNum == 3)
         {
-            yield return StartCoroutine(BuildPatternDatabase_ForPushRule());
+            if (isPushRule) { yield return StartCoroutine(BuildPatternDatabase_8Puzzle_Push()); }
+            else { yield return StartCoroutine(BuildPatternDatabase_8Puzzle_Standard()); }
         }
-        else
+        else if (rowNum == 4)
         {
-            yield return StartCoroutine(BuildPatternDatabase_ForStandardRule());
+            if (isPushRule) { yield return StartCoroutine(BuildPatternDatabase_15Puzzle_Push()); }
+            else { yield return StartCoroutine(BuildPatternDatabase_15Puzzle_Standard()); }
         }
     }
 
-    // --- PDB構築の「親」関数（「押し出し」ルール専用） ---
-    IEnumerator BuildPatternDatabase_ForPushRule()
+    // --- PDB構築の「親」関数（「押し出し」8パズル） ---
+    IEnumerator BuildPatternDatabase_8Puzzle_Push()
     {
         string pdbPath = Application.persistentDataPath + "/8puzzle_full_multislide.dat";
         int[] all_tiles = new int[] { 0, 1, 2, 3, 4, 5, 6, 7, 8 };
         patternDB1 = LoadPDB(pdbPath);
         int maxDepthInFile = 0;
-
         if (patternDB1 == null)
         {
             if (Ctr.isStop) yield break;
@@ -421,7 +401,6 @@ public class IDA : MonoBehaviour
             yield return StartCoroutine(BuildSinglePatternDB_MultiSlide(all_tiles, patternDB1, 100));
             if (!Ctr.isStop) SavePDB(pdbPath, patternDB1);
         }
-
         if (patternDB1 != null && patternDB1.Count > 0)
         {
             maxDepthInFile = patternDB1.Values.Max();
@@ -430,14 +409,13 @@ public class IDA : MonoBehaviour
         }
     }
 
-    // --- PDB構築の「親」関数（「標準」ルール専用） ---
-    IEnumerator BuildPatternDatabase_ForStandardRule()
+    // --- PDB構築の「親」関数（「標準」8パズル） ---
+    IEnumerator BuildPatternDatabase_8Puzzle_Standard()
     {
         string pdbPath = Application.persistentDataPath + "/8puzzle_full_standard.dat";
         int[] all_tiles = new int[] { 0, 1, 2, 3, 4, 5, 6, 7, 8 };
         patternDB1 = LoadPDB(pdbPath);
         int maxDepthInFile = 0;
-
         if (patternDB1 == null)
         {
             if (Ctr.isStop) yield break;
@@ -446,7 +424,6 @@ public class IDA : MonoBehaviour
             yield return StartCoroutine(BuildSinglePatternDB_Standard(all_tiles, patternDB1, 100));
             if (!Ctr.isStop) SavePDB(pdbPath, patternDB1);
         }
-
         if (patternDB1 != null && patternDB1.Count > 0)
         {
             maxDepthInFile = patternDB1.Values.Max();
@@ -455,13 +432,71 @@ public class IDA : MonoBehaviour
         }
     }
 
+    // --- ★★★ 15パズルPDB（押し出し）構築「親」関数 ★★★ ---
+    IEnumerator BuildPatternDatabase_15Puzzle_Push()
+    {
+        string suffix = "_multislide";
+        int[] pdb1_tiles = new int[] { 1, 2, 3, 4, 5, 6, 7 };
+        string pdb1Path = Application.persistentDataPath + $"/15puzzle_1-7{suffix}.dat";
+        patternDB1 = LoadPDB(pdb1Path);
+        if (patternDB1 == null)
+        {
+            if (Ctr.isStop) yield break;
+            Debug.Log("15パズル「押し出し」PDB1 (1-7) を新規構築します...（これが“あのバグ”を再現するはず！）");
+            patternDB1 = new Dictionary<ulong, byte>();
+            yield return StartCoroutine(BuildSinglePatternDB_MultiSlide(pdb1_tiles, patternDB1, 100));
+            if (!Ctr.isStop) SavePDB(pdb1Path, patternDB1);
+        }
 
-    // ★「押し出し」PDB構築関数（＝全状態の最短手数(答え)をBFSで計算）
+        int[] pdb2_tiles = new int[] { 8, 9, 10, 11, 12, 13, 14, 15 };
+        string pdb2Path = Application.persistentDataPath + $"/15puzzle_8-15{suffix}.dat";
+        patternDB2 = LoadPDB(pdb2Path);
+        if (patternDB2 == null)
+        {
+            if (Ctr.isStop) yield break;
+            Debug.Log("15パズル「押し出し」PDB2 (8-15) を新規構築します...（こっちもバグるかも）");
+            patternDB2 = new Dictionary<ulong, byte>();
+            yield return StartCoroutine(BuildSinglePatternDB_MultiSlide(pdb2_tiles, patternDB2, 100));
+            if (!Ctr.isStop) SavePDB(pdb2Path, patternDB2);
+        }
+    }
+
+    // --- ★★★ 15パズルPDB（標準）構築「親」関数 ★★★ ---
+    IEnumerator BuildPatternDatabase_15Puzzle_Standard()
+    {
+        string suffix = "_standard";
+        int[] pdb1_tiles = new int[] { 1, 2, 3, 4, 5, 6, 7 };
+        string pdb1Path = Application.persistentDataPath + $"/15puzzle_1-7{suffix}.dat";
+        patternDB1 = LoadPDB(pdb1Path);
+        if (patternDB1 == null)
+        {
+            if (Ctr.isStop) yield break;
+            Debug.Log("15パズル「標準」PDB1 (1-7) を新規構築します...（数分かかります）");
+            patternDB1 = new Dictionary<ulong, byte>();
+            yield return StartCoroutine(BuildSinglePatternDB_Standard(pdb1_tiles, patternDB1, 100));
+            if (!Ctr.isStop) SavePDB(pdb1Path, patternDB1);
+        }
+
+        int[] pdb2_tiles = new int[] { 8, 9, 10, 11, 12, 13, 14, 15 };
+        string pdb2Path = Application.persistentDataPath + $"/15puzzle_8-15{suffix}.dat";
+        patternDB2 = LoadPDB(pdb2Path);
+        if (patternDB2 == null)
+        {
+            if (Ctr.isStop) yield break;
+            Debug.Log("15パズル「標準」PDB2 (8-15) を新規構築します...（PDB1より時間がかかります）");
+            patternDB2 = new Dictionary<ulong, byte>();
+            yield return StartCoroutine(BuildSinglePatternDB_Standard(pdb2_tiles, patternDB2, 100));
+            if (!Ctr.isStop) SavePDB(pdb2Path, patternDB2);
+        }
+    }
+
+
+    // ★「押し出し」PDB構築関数（BFS本体）
     IEnumerator BuildSinglePatternDB_MultiSlide(int[] targetTiles, Dictionary<ulong, byte> pdb, int maxDepth)
     {
         Debug.LogWarning($"--- ★★★ 押し出しPDB構築（全状態BFS）が起動 ★★★ ---");
-        Debug.LogError($"★ N={rowNum}, tileNum={Ctr.tileNum}, maxDepth={maxDepth}, targetTiles.Length={targetTiles.Length}");
-
+        Debug.LogError($"★ N={rowNum}, tileNum={tileNum}, maxDepth={maxDepth}, targetTiles.Length={targetTiles.Length}");
+        float startTime = Time.realtimeSinceStartup;
         var queue = new Queue<(Vector2Int[], int)>();
         var goalState = (Vector2Int[])finPos.Clone();
         ulong goalKey = GetPatternKey(goalState, targetTiles);
@@ -469,14 +504,13 @@ public class IDA : MonoBehaviour
         queue.Enqueue((goalState, 0));
         long processed = 0;
         int maxDepthFound = 0;
-
         while (queue.Count > 0)
         {
             if (Ctr.isStop) yield break;
             var (state, depth) = queue.Dequeue();
             if (depth > maxDepthFound) { maxDepthFound = depth; Debug.Log($"★ 最長手数を更新(Push): {maxDepthFound} 手"); }
             if (depth >= maxDepth) continue;
-            var neighbors = GetNeighborsMultiSlide_ForPDB(state); // ★押し出し
+            var neighbors = GetNeighborsMultiSlide_ForPDB(state);
             foreach (var neighbor in neighbors)
             {
                 ulong key = GetPatternKey(neighbor, targetTiles);
@@ -485,16 +519,17 @@ public class IDA : MonoBehaviour
             processed++;
             if (processed % 20000 == 0) { Debug.Log($"PDB(Push)構築中... {processed}件"); yield return null; }
         }
+        float elapsedTime = Time.realtimeSinceStartup - startTime;
         Debug.Log($"PDB(Push)構築完了。総件数: {processed}");
-        Debug.LogError($"★★★【証明完了】「押し出し」ルールの最長手数は: {maxDepthFound} 手でした ★★★");
+        Debug.LogError($"★★★【証明完了】「押し出し」ルールの最長手数は: {maxDepthFound} 手でした ★★★ (構築時間: {elapsedTime:F2}秒)");
     }
 
-    // --- 「標準」PDB構築関数（＝全状態の最短手数(答え)をBFSで計算）
+    // --- 「標準」PDB構築関数（BFS本体）
     IEnumerator BuildSinglePatternDB_Standard(int[] targetTiles, Dictionary<ulong, byte> pdb, int maxDepth)
     {
         Debug.LogWarning($"--- ★★★ 標準PDB構築（全状態BFS）が起動 ★★★ ---");
-        Debug.LogError($"★ N={rowNum}, tileNum={Ctr.tileNum}, maxDepth={maxDepth}, targetTiles.Length={targetTiles.Length}");
-
+        Debug.LogError($"★ N={rowNum}, tileNum={tileNum}, maxDepth={maxDepth}, targetTiles.Length={targetTiles.Length}");
+        float startTime = Time.realtimeSinceStartup;
         var queue = new Queue<(Vector2Int[], int)>();
         var goalState = (Vector2Int[])finPos.Clone();
         ulong goalKey = GetPatternKey(goalState, targetTiles);
@@ -502,16 +537,13 @@ public class IDA : MonoBehaviour
         queue.Enqueue((goalState, 0));
         long processed = 0;
         int maxDepthFound = 0;
-
         while (queue.Count > 0)
         {
             if (Ctr.isStop) yield break;
             var (state, depth) = queue.Dequeue();
             if (depth > maxDepthFound) { maxDepthFound = depth; Debug.Log($"★ 最長手数を更新(Std): {maxDepthFound} 手"); }
             if (depth >= maxDepth) continue;
-
-            var neighbors = GetNeighbors1_ForPDB(state); // ★標準
-
+            var neighbors = GetNeighbors1_ForPDB(state);
             foreach (var neighbor in neighbors)
             {
                 ulong key = GetPatternKey(neighbor, targetTiles);
@@ -520,8 +552,9 @@ public class IDA : MonoBehaviour
             processed++;
             if (processed % 20000 == 0) { Debug.Log($"PDB(Std)構築中... {processed}件"); yield return null; }
         }
+        float elapsedTime = Time.realtimeSinceStartup - startTime;
         Debug.Log($"PDB(Std)構築完了。総件数: {processed}");
-        Debug.LogError($"★★★【証明完了】「標準」ルールの最長手数は: {maxDepthFound} 手でした ★★★");
+        Debug.LogError($"★★★【証明完了】「標準」ルールの最長手数は: {maxDepthFound} 手でした ★★★ (構築時間: {elapsedTime:F2}秒)");
     }
 
 
@@ -530,7 +563,7 @@ public class IDA : MonoBehaviour
     {
         var list = new List<Vector2Int[]>();
         int N = rowNum;
-        int maxSlide = (N == 4) ? 3 : 2; // N=3 の時は 2
+        int maxSlide = (N == 4) ? 3 : 2;
         Vector2Int empty = statePos[0];
         int[] dx = { 1, -1, 0, 0 }; int[] dy = { 0, 0, 1, -1 };
         for (int dir = 0; dir < 4; dir++)
@@ -543,7 +576,7 @@ public class IDA : MonoBehaviour
                     int nx = empty.x + dx[dir] * s; int ny = empty.y + dy[dir] * s;
                     if (nx < 0 || nx >= N || ny < 0 || ny >= N) { ok = false; break; }
                     int tileNum = -1;
-                    for (int t = 1; t <= Ctr.tileNum; t++)
+                    for (int t = 1; t <= this.tileNum; t++)
                     {
                         if (statePos[t].x == nx && statePos[t].y == ny) { tileNum = t; break; }
                     }
@@ -575,7 +608,7 @@ public class IDA : MonoBehaviour
             int nx = empty.x + dx[dir]; int ny = empty.y + dy[dir];
             if (nx < 0 || nx >= N || ny < 0 || ny >= N) continue;
             int tileNum = -1;
-            for (int t = 1; t <= Ctr.tileNum; t++)
+            for (int t = 1; t <= this.tileNum; t++)
             {
                 if (statePos[t].x == nx && statePos[t].y == ny) { tileNum = t; break; }
             }
@@ -590,26 +623,45 @@ public class IDA : MonoBehaviour
 
     // ========== 4. ヒューリスティクス & 補助関数 ==========
 
-    // ★ 8パズル（9ピース）の全状態をキーにする関数
+    // ★★★ 15パズル対応版キー生成 ★★★
     ulong GetPatternKey(Vector2Int[] state, int[] targetTiles)
     {
         ulong key = 0;
-        int N = rowNum; // 3
-        // targetTiles（引数）を無視して、0～8 の全ピースをキーにする
-        for (int i = 0; i <= 8; i++) // 9回ループ
+        int N = rowNum;
+
+        // 8パズル（分割なし）の場合
+        if (N == 3)
         {
-            if (i >= state.Length || state[i] == null) continue; // 安全装置
-            int pos = state[i].x * N + state[i].y; // 0～8
-            key |= ((ulong)pos << (i * 4)); // 9ピース x 4bit = 36bit
+            for (int i = 0; i <= 8; i++) // 0～8
+            {
+                if (i >= state.Length || state[i] == null) continue;
+                int pos = state[i].x * N + state[i].y;
+                key |= ((ulong)pos << (i * 4));
+            }
+        }
+        // 15パズル（7-8分割）の場合
+        else // (N == 4)
+        {
+            // （PDB構築の時だけ呼ばれる）
+            for (int i = 0; i < targetTiles.Length; i++) // 7回 または 8回
+            {
+                int tile = targetTiles[i]; // 1-7 または 8-15
+                if (tile >= state.Length || state[tile] == null) continue;
+                int pos = state[tile].x * N + state[tile].y; // 0～15
+                key |= ((ulong)pos << (i * 4));
+            }
+            // ★ 空白(0)の位置もキーに含める！
+            int emptyPos = state[0].x * N + state[0].y;
+            key |= ((ulong)emptyPos << (targetTiles.Length * 4));
         }
         return key;
     }
 
-    // ★ PDBキー(ulong)を、人間が読める「盤面(Vector2Int[])」に“アンパック”する関数
+    // ★★★ 15パズル対応版アンパック ★★★
     Vector2Int[] UnpackKeyToState(ulong key, int N)
     {
-        Vector2Int[] state = new Vector2Int[N * N]; // 9要素 (0～8)
-        for (int i = 0; i <= 8; i++) // 9ピース (0～8)
+        Vector2Int[] state = new Vector2Int[N * N];
+        for (int i = 0; i < (N * N); i++) // 0～8 または 0～15
         {
             ulong chunk = (key >> (i * 4)) & 0xF;
             int pos = (int)chunk;
@@ -620,10 +672,10 @@ public class IDA : MonoBehaviour
         return state;
     }
 
-    // ★ 盤面(state)を、人間が読める「3x3の文字列」にフォーマットする関数
+    // ★ 盤面(state)を、人間が読める「文字列」にフォーマットする関数
     string FormatState(Vector2Int[] state, int N)
     {
-        int[] grid = new int[N * N]; // 9マス
+        int[] grid = new int[N * N];
         for (int piece = 0; piece < state.Length; piece++)
         {
             if (piece >= state.Length || state[piece] == null) continue;
@@ -633,12 +685,12 @@ public class IDA : MonoBehaviour
             if (pos >= 0 && pos < grid.Length) { grid[pos] = piece; }
         }
         StringBuilder boardString = new StringBuilder();
-        boardString.Append("\n--- 盤面 ---\n");
+        boardString.Append($"\n--- 盤面 (N={N}) ---\n");
         for (int i = 0; i < N; i++)
         {
             for (int j = 0; j < N; j++)
             {
-                boardString.Append(grid[i * N + j].ToString() + " ");
+                boardString.Append(grid[i * N + j].ToString().PadLeft(2) + " ");
             }
             boardString.Append("\n");
         }
@@ -650,19 +702,25 @@ public class IDA : MonoBehaviour
     {
         Debug.LogWarning($"--- 【{ruleName}ルール】最長手数 ({maxDepth}手) の盤面を探索中... ---");
         int count = 0;
-        foreach (var pair in pdb)
+
+        // 8パズル（分割なし）の場合のみ実行
+        if (rowNum == 3)
         {
-            if (pair.Value == maxDepth)
+            foreach (var pair in pdb)
             {
-                ulong key = pair.Key;
-                Vector2Int[] state = UnpackKeyToState(key, rowNum);
-                string boardText = FormatState(state, rowNum);
-                Debug.Log($"【{ruleName} / {maxDepth}手 盤面 {count + 1}】 {boardText}");
-                count++;
+                if (pair.Value == maxDepth)
+                {
+                    ulong key = pair.Key;
+                    Vector2Int[] state = UnpackKeyToState(key, rowNum);
+                    string boardText = FormatState(state, rowNum);
+                    Debug.Log($"【{ruleName} / {maxDepth}手 盤面 {count + 1}】 {boardText}");
+                    count++;
+                }
             }
         }
+
         if (count > 0) { Debug.LogWarning($"--- {ruleName}ルールの最長({maxDepth}手)盤面は、全部で {count} 件見つかりました ---"); }
-        else { Debug.LogError("あれ？ 最長手数の盤面が見つかりませんでした。"); }
+        else if (rowNum == 3) { Debug.LogError("あれ？ 最長手数の盤面が見つかりませんでした。"); }
     }
 
 
@@ -671,7 +729,7 @@ public class IDA : MonoBehaviour
     {
         if (manhattanTable != null) return;
         int N = rowNum;
-        int tiles = Ctr.tileNum; // 8
+        int tiles = tileNum;
         manhattanTable = new int[tiles + 1, N * N];
         for (int t = 1; t <= tiles; t++)
         {
@@ -683,34 +741,61 @@ public class IDA : MonoBehaviour
         }
     }
 
-    // ★★★★★★ PDB（攻略本）対応版ヒューリスティクス ★★★★★★
+    // ★★★★★★ 15パズルPDB対応版ヒューリスティクス ★★★★★★
     int Heuristic(Vector2Int[] pos, int lastDir)
     {
+        // （（（★【`h_val`エラー】修正版！ ★）））
+
+        int h_val = 0; // ヒューリスティクス値
+
         // --- ★ 1. PDB がロード済みの場合 ★ ---
-        // (「usePDB」フラグがONで、PDBがロード成功してたら)
-        if (usePDB && patternDB1 != null)
+        if (usePDB && (patternDB1 != null))
         {
-            ulong key = GetPatternKey(pos, null); // 9ピースのキーを取得
-            if (patternDB1.TryGetValue(key, out byte moves))
+            // 8パズル（分割なし）の場合
+            if (rowNum == 3)
             {
-                return (int)moves; // 「答え」を返す
+                // 8パズルは「分割なし」なので、targetTiles はダミー（使われない）
+                ulong key = GetPatternKey(pos, null);
+                if (patternDB1.TryGetValue(key, out byte moves))
+                {
+                    return (int)moves; // 「答え」を返す
+                }
+                else { Debug.LogError($"8パズルPDBにキー {key} が見つかりません！"); }
             }
-            else { Debug.LogError($"PDBにキー {key} が見つかりません！"); }
+            // 15パズル（7-8分割）の場合
+            else if (rowNum == 4 && patternDB2 != null)
+            {
+                // PDB1 (1-7 + 空白)
+                ulong key1 = GetPatternKey(pos, new int[] { 1, 2, 3, 4, 5, 6, 7 });
+                int pdb1Val = patternDB1.TryGetValue(key1, out byte v1) ? v1 : 0;
+
+                // PDB2 (8-15 + 空白)
+                ulong key2 = GetPatternKey(pos, new int[] { 8, 9, 10, 11, 12, 13, 14, 15 });
+                int pdb2Val = patternDB2.TryGetValue(key2, out byte v2) ? v2 : 0;
+
+                // ↓↓↓ ★★★【「h_val」エラー修正！】★★★ ↓↓↓
+                // ★ 2つのPDBの“足し算”を「予測」として h_val に“代入”！
+                h_val = pdb1Val + pdb2Val;
+                // ↑↑↑ ★★★★★★★★★★★★★★★★★★★ ↑↑↑
+            }
         }
 
-        // --- ★ 2. PDBが「ない」場合（usePDBがfalse、または構築失敗） ★ ---
-        int N = rowNum;
-        int h_val = 0;
-        for (int t = 1; t <= Ctr.tileNum; t++)
+        // --- ★ 2. PDBが「ない」場合、または15パズルのPDB予測を「h/k」する場合 ★ ---
+        if (h_val == 0) // ★ PDBを使わなかった時だけ、マンハッタンを計算
         {
-            int idx = pos[t].x * N + pos[t].y;
-            h_val += manhattanTable[t, idx];
+            int N = rowNum;
+            for (int t = 1; t <= tileNum; t++)
+            {
+                int idx = pos[t].x * N + pos[t].y;
+                h_val += manhattanTable[t, idx];
+            }
+            h_val += LinearConflict(pos);
         }
-        h_val += LinearConflict(pos);
 
-        if (Ctr.isCountInterpretation) // 押し出しルールの場合
+        // --- ★ 3. 「押し出し」ルールなら、h/k で割る ★ ---
+        if (Ctr.isCountInterpretation)
         {
-            int maxSlide = (N == 4) ? 3 : 2; // N=3 の時は 2
+            int maxSlide = (rowNum == 4) ? 3 : 2;
             if (maxSlide > 0 && h_val > 0)
             {
                 return (int)Mathf.Ceil((float)h_val / (float)maxSlide);
@@ -727,7 +812,7 @@ public class IDA : MonoBehaviour
         for (int r = 0; r < N; r++)
         {
             var rowTiles = new List<int>();
-            for (int t = 1; t <= Ctr.tileNum; t++)
+            for (int t = 1; t <= tileNum; t++)
                 if (pos[t].x == r && finPos[t].x == r) rowTiles.Add(t);
             for (int a = 0; a < rowTiles.Count; a++)
                 for (int b = a + 1; b < rowTiles.Count; b++)
@@ -739,7 +824,7 @@ public class IDA : MonoBehaviour
         for (int c = 0; c < N; c++)
         {
             var colTiles = new List<int>();
-            for (int t = 1; t <= Ctr.tileNum; t++)
+            for (int t = 1; t <= tileNum; t++)
                 if (pos[t].y == c && finPos[t].y == c) colTiles.Add(t);
             for (int a = 0; a < colTiles.Count; a++)
                 for (int b = a + 1; b < colTiles.Count; b++)
@@ -754,10 +839,9 @@ public class IDA : MonoBehaviour
     // --- 「標準ルール」：空白の1マス移動（IDA*探索用） ---
     List<Vector2Int[]> GetNeighbors1WithPruning(Vector2Int[] statePos, int lastDir)
     {
-        // ★PDBがロード済みなら、f値ソートは不要（hが答えなので）
-        if (usePDB && patternDB1 != null)
+        if (usePDB && (patternDB1 != null || patternDB2 != null))
         {
-            return GetNeighbors1_ForPDB(statePos); // ソートしないBFS版を流用
+            return GetNeighbors1_ForPDB(statePos);
         }
 
         var list = new List<Vector2Int[]>();
@@ -770,7 +854,7 @@ public class IDA : MonoBehaviour
             int nx = empty.x + dx[dir]; int ny = empty.y + dy[dir];
             if (nx < 0 || nx >= N || ny < 0 || ny >= N) continue;
             int tileNum = -1;
-            for (int t = 1; t <= Ctr.tileNum; t++)
+            for (int t = 1; t <= this.tileNum; t++)
             {
                 if (statePos[t].x == nx && statePos[t].y == ny) { tileNum = t; break; }
             }
@@ -785,14 +869,11 @@ public class IDA : MonoBehaviour
     // --- 「押し出し」ルール：複数枚を動かす（IDA*探索用） ---
     List<Vector2Int[]> GetNeighborsMultiSlide(Vector2Int[] statePos, int g, int lastDir)
     {
-        // ★PDBがロード済みなら、f値ソートは不要（hが答えなので）
-        if (usePDB && patternDB1 != null)
+        if (usePDB && (patternDB1 != null || patternDB2 != null))
         {
-            // PDBがある場合は、ソートを省略したBFS版を流用する
             return GetNeighborsMultiSlide_ForPDB(statePos);
         }
 
-        // --- PDBが「ない」場合（＝usePDBがfalse、または構築中）は、従来通りf値でソートする ---
         var candidates = new List<(Vector2Int[], int)>();
         int N = rowNum; int maxSlide = (N == 4) ? 3 : 2;
         Vector2Int empty = statePos[0];
@@ -809,7 +890,7 @@ public class IDA : MonoBehaviour
                     int nx = empty.x + dx[dir] * s; int ny = empty.y + dy[dir] * s;
                     if (nx < 0 || nx >= N || ny < 0 || ny >= N) { ok = false; break; }
                     int tileNum = -1;
-                    for (int t = 1; t <= Ctr.tileNum; t++)
+                    for (int t = 1; t <= this.tileNum; t++)
                     {
                         if (statePos[t].x == nx && statePos[t].y == ny) { tileNum = t; break; }
                     }
@@ -834,48 +915,43 @@ public class IDA : MonoBehaviour
 
     // ========== 5. CSV書き出し & 「解の分析」 & 補助関数 ==========
 
-    // --- 「解の手順(solutionPath)」を分析して、「押し出し回数」をカウントする関数 ---
+    // --- ★★★ 15パズル対応版「解の分析」 ★★★ ---
     private int AnalyzeSolutionPath(List<Vector2Int[]> path, bool isPushRule)
     {
         int pushCount = 0;
-
         if (isPushRule)
         {
-            // --- 「押し出し」ルールの場合 ---
             for (int i = 0; i < path.Count - 1; i++)
             {
-                Vector2Int emptyA = path[i][0];
-                Vector2Int emptyB = path[i + 1][0];
-                int dist = Mathf.Abs(emptyA.x - emptyB.x) + Mathf.Abs(emptyA.y - emptyB.y);
-                if (dist > 1) { pushCount++; }
+                Vector2Int[] prevState = path[i];
+                Vector2Int[] nextState = path[i + 1];
+                int changedTiles = 0;
+                for (int piece = 0; piece <= tileNum; piece++) // ★ tileNum (8 or 15) まで
+                {
+                    if (prevState[piece] != nextState[piece]) { changedTiles++; }
+                }
+                if (changedTiles > 2) { pushCount++; }
             }
         }
         else
         {
-            // --- 「標準」ルールの場合 ---
             for (int i = 0; i < path.Count - 2; i++)
             {
                 int dir1 = GetMoveDirection(path[i], path[i + 1]);
                 int dir2 = GetMoveDirection(path[i + 1], path[i + 2]);
-                if (dir1 != -1 && dir1 == dir2)
-                {
-                    pushCount++;
-                    i++; // ★ 1手ぶんスキップ
-                }
+                if (dir1 != -1 && dir1 == dir2) { pushCount++; i++; }
             }
         }
         return pushCount;
     }
 
 
-    // --- CSV書き出し関数（★ PushCount列を追加） ---
+    // --- CSV書き出し関数（★ 15パズル対応版） ---
     private void RecordResult(string ruleType, int moves, float time, int nodes, int pushCount)
     {
-        // ★ルール名に「PDBあり/なし」も記録するように変更
         string ruleName = ruleType + (usePDB ? "_PDB" : "_NoPDB");
-
-        // ★ファイル名も「PDBあり/なし」で分ける
-        string fileName = usePDB ? "8puzzle_results_PDB.csv" : "8puzzle_results_NoPDB.csv";
+        string fileName = (rowNum == 3) ? "8puzzle_results.csv" : "15puzzle_results.csv";
+        fileName = fileName.Replace(".csv", (usePDB ? "_PDB.csv" : "_NoPDB.csv"));
         string filePath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) + "/" + fileName;
 
         string line = $"\"{ruleName}\",{moves},{time},{nodes},{pushCount}";
@@ -904,7 +980,7 @@ public class IDA : MonoBehaviour
                 int fin = Ctr.finishState[count];
                 nowPos[now] = new Vector2Int(i, j);
                 finPos[fin] = new Vector2Int(i, j);
-                staPos[now] = new Vector2Int(i, j); // ★バグ修正済み
+                staPos[now] = new Vector2Int(i, j);
                 count++;
             }
         }
@@ -915,9 +991,9 @@ public class IDA : MonoBehaviour
     {
         int N = rowNum;
         ulong key = 0ul;
-        for (int i = 0; i < state.Length && i < 9; i++)
+        for (int i = 0; i < state.Length && i <= tileNum; i++)
         {
-            if (i >= state.Length || state[i] == null) continue; // 安全装置
+            if (i >= state.Length || state[i] == null) continue;
             int posIndex = state[i].x * N + state[i].y;
             ulong v = (ulong)(posIndex & 0xF);
             key |= (v << (i * 4));
@@ -939,20 +1015,14 @@ public class IDA : MonoBehaviour
     {
         Vector2Int prevEmpty = prevState[0]; Vector2Int nextEmpty = nextState[0];
         int dx = nextEmpty.x - prevEmpty.x; int dy = nextEmpty.y - prevEmpty.y;
-        if (dx > 0) return 0; // 下
-        if (dx < 0) return 1; // 上
-        if (dy > 0) return 2; // 右
-        if (dy < 0) return 3; // 左
+        if (dx > 0) return 0; if (dx < 0) return 1; if (dy > 0) return 2; if (dy < 0) return 3;
         return -1;
     }
 
     // --- 方向(dir)の逆方向を返す ---
     int GetOppositeDirection(int dir)
     {
-        if (dir == 0) return 1; // 下
-        if (dir == 1) return 0; // 上
-        if (dir == 2) return 3; // 右
-        if (dir == 3) return 2; // 左
+        if (dir == 0) return 1; if (dir == 1) return 0; if (dir == 2) return 3; if (dir == 3) return 2;
         return -1;
     }
 
@@ -960,15 +1030,9 @@ public class IDA : MonoBehaviour
     public void OnButtonClickReplay()
     {
         if (solutionPath == null || solutionPath.Count == 0)
-        {
-            Debug.Log("再生する解がありません");
-            return;
-        }
+        { Debug.Log("再生する解がありません"); return; }
         if (isReplaying)
-        {
-            Debug.Log("既にリプレイ中です");
-            return;
-        }
+        { Debug.Log("既にリプレイ中です"); return; }
         StartCoroutine(ReplaySolution());
     }
 
@@ -979,7 +1043,7 @@ public class IDA : MonoBehaviour
         for (int i = 0; i < solutionPath.Count; i++)
         {
             if (Ctr.isStop) break;
-            Ctr.stateTileIDA(solutionPath[i],i);
+            Ctr.stateTileIDA(solutionPath[i], i);
             if (i < solutionPath.Count - 1)
                 yield return new WaitForSeconds(0.5f);
         }
@@ -995,13 +1059,71 @@ public class IDA : MonoBehaviour
         for (int i = 0; i < solutionPath.Count; i++)
         {
             if (Ctr.isStop) { Debug.Log("リプレイが中断されました"); break; }
-            Ctr.stateTileIDA(solutionPath[i],i);
+            Ctr.stateTileIDA(solutionPath[i], i);
             if (i < solutionPath.Count - 1)
                 yield return new WaitForSeconds(0.5f);
-            
         }
         if (!Ctr.isStop) { Debug.Log("リプレイ完了！"); }
         Ctr.isfinish = true; isReplaying = false;
     }
 
+    // --- ★★★【「経路（けいろ）バグ」修正】★★★ ---
+    // PDB（攻略本）を“地図”にして、スタートからゴールまでの“最短経路”を“作り直す”関数
+    IEnumerator ReconstructPathWithPDB(Vector2Int[] startState)
+    {
+        if (solutionPath != null && solutionPath.Count > 1) { yield break; }
+        Debug.LogWarning("★ PDBモード：解の経路を再構築します...");
+        var newPath = new List<Vector2Int[]>();
+        newPath.Add((Vector2Int[])startState.Clone());
+        var current = (Vector2Int[])startState.Clone();
+        bool isPushRule = Ctr.isCountInterpretation;
+
+        for (int i = 0; i < 200; i++)
+        {
+            int h_current = Heuristic(current, -1);
+            if (h_current == 0) { break; } // ゴール！
+
+            var neighbors = isPushRule ?
+                                GetNeighborsMultiSlide_ForPDB(current) :
+                                GetNeighbors1_ForPDB(current);
+
+            Vector2Int[] bestPushMove = null;
+            Vector2Int[] bestOneTileMove = null;
+
+            foreach (var neighbor in neighbors)
+            {
+                int h_neighbor = Heuristic(neighbor, -1);
+                if (h_neighbor == h_current - 1)
+                {
+                    if (isPushRule)
+                    {
+                        int dist = Mathf.Abs(current[0].x - neighbor[0].x) + Mathf.Abs(current[0].y - neighbor[0].y);
+                        if (dist > 1)
+                        {
+                            bestPushMove = neighbor;
+                            break;
+                        }
+                        else { bestOneTileMove = neighbor; }
+                    }
+                    else { bestOneTileMove = neighbor; break; }
+                }
+            }
+            Vector2Int[] chosenMove = bestPushMove;
+            if (chosenMove == null) { chosenMove = bestOneTileMove; }
+
+            if (chosenMove != null)
+            {
+                newPath.Add((Vector2Int[])chosenMove.Clone());
+                current = (Vector2Int[])chosenMove.Clone();
+            }
+            else
+            {
+                Debug.LogError($"経路の再構築に失敗しました (h={h_current})");
+                yield break;
+            }
+        }
+        solutionPath = newPath;
+        Debug.LogWarning($"★ 経路の再構築が完了しました。総手数: {solutionPath.Count - 1}");
+        yield return null;
+    }
 }
